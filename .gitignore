@@ -1,0 +1,24 @@
+# Large datasets - kept locally, not uploaded to GitHub
+notebooks/Wildfire_Dataset.csv
+notebooks/Wildfire_Dataset_cleaned.csv
+notebooks/Wildfire_Dataset_model_ready.csv
+notebooks/ml_eda.ipynb
+data/Wildfire_Dataset.csv
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# VS Code local settings
+.vscode/
+
+# Local scripts not included in the repository
+notebooks/app.py
+notebooks/app_corrected_naming.py
+src/data_cleaning.py

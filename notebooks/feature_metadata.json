@@ -1,0 +1,20 @@
+{
+    "features": [
+        "Precipitation_Average_30_Days",
+        "Specific_Humidity_Average_30_Days",
+        "Min_Relative_Humidity_Min_30_Days",
+        "Max_Relative_Humidity_Max_7_Days",
+        "Solar_Radiation_Average_7_Days",
+        "Min_Daily_Temperature_Min_14_Days",
+        "Max_Daily_Temperature_Max_30_Days",
+        "Wind_Speed_Average_30_Days",
+        "Vapor_Pressure_Deficit_Average_30_Days",
+        "Potential_Evapotranspiration_Average_30_Days",
+        "Solar_Radiation_Today",
+        "Min_Relative_Humidity_Today",
+        "Vapor_Pressure_Deficit_Today",
+        "Wind_Speed_Today"
+    ],
+    "balanced_threshold": 0.5,
+    "high_sensitivity_threshold": 0.35
+}
