@@ -22,3 +22,4 @@ __pycache__/
 notebooks/app.py
 notebooks/app_corrected_naming.py
 src/data_cleaning.py
+notebooks/us_states.geojson
