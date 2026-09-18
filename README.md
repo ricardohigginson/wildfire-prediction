@@ -1,388 +1,202 @@
 # Wildfire Ignition Risk Prediction
 
 ## Overview
+This project develops an end-to-end machine learning pipeline to estimate the probability of wildfire ignition across the continental United States based on recent environmental and weather conditions. 
 
-This project develops a machine learning model to estimate the probability of wildfire ignition based on recent environmental and weather conditions.
+The project follows a structured machine learning workflow:
+* **Exploratory Data Analysis (EDA)** & geographic visualization
+* **Data Preparation & Cleaning** (sentinel missing value handling, unit conversions)
+* **Feature Engineering & Redundancy Reduction** (historical time windows & collinearity filtering)
+* **Spatial Grouped Train/Test Splitting** (preventing spatial data leakage)
+* **Random Forest Baseline Modeling**
+* **Permutation Importance & Feature Selection** (reducing 40 features to 14)
+* **Methodological Validation** (Out-of-Fold permutation importance check)
+* **Multi-Stage XGBoost Hyperparameter Optimization** (Randomized Search, Grid Search, and Manual Fine-Tuning)
+* **Classification Threshold Analysis** (Balanced vs. High-Sensitivity operational modes)
+* **Model Explainability with SHAP** (quantifying feature contributions)
+* **Artifact Export & Interactive Demo Suite** (Terminal CLI and Jupyter `ipywidgets` GUI)
 
-The project follows an end-to-end machine learning workflow:
-
-- Exploratory Data Analysis (EDA)
-- Data preparation and feature engineering
-- Spatially grouped train/test splitting
-- Random Forest modelling
-- XGBoost modelling
-- Feature selection using Permutation Importance
-- Classification threshold analysis
-- Model explainability with SHAP
-- Final model export for prediction
-
-The main objective is to investigate whether recent environmental conditions can provide useful signals for predicting wildfire ignition risk.
+---
 
 ## Dataset
+The project utilizes the **US Wildfire Dataset (2014–2025)** created by FireCastRL and hosted on Kaggle:
+[Kaggle Dataset Link](https://www.kaggle.com/datasets/firecastrl/us-wildfire-dataset)
 
-The project uses the **US Wildfire Dataset (2014–2025)** created by FireCastRL and available on Kaggle.
+### Key Characteristics:
+* **126,800 labeled samples**: 50,720 positive wildfire ignition events (IRWIN) and 76,080 negative samples (synthesized using far, near, and yearly offsets).
+* **Coverage**: Continental United States (2014–2025).
+* **15 raw environmental variables** sourced from GRIDMET (precipitation, humidity, solar radiation, temperature, wind speed, vapor pressure deficit, fuel moisture, ERC, BI, evapotranspiration).
+* **75-day temporal sequences**: Each observation consists of 60 historical days before the reference day, the reference day itself (Today), and 14 days post-reference day (>9.5 million sequence rows in raw data).
 
-https://www.kaggle.com/datasets/firecastrl/us-wildfire-dataset
+---
 
-According to the dataset documentation:
+## Data Preparation & Feature Engineering
 
-- 126,800 labelled samples
-- 50,720 positive wildfire ignition events
-- 76,080 negative samples
-- Coverage of the continental United States
-- Period: 2014–2025
-- 15 environmental variables
-- Environmental variables from GRIDMET
-- Wildfire ignition labels from IRWIN
+### 1. Data Cleaning
+* **Sentinel Missing Value Handling**: Raw invalid missing data flags (value `32767`) in GRIDMET weather metrics were identified and replaced with `NaN` before further processing.
+* **Temperature Unit Conversion**: Daily minimum (`Min_Daily_Temperature`) and maximum (`Max_Daily_Temperature`) readings were converted from Kelvin to Celsius ($^\circ\text{C} = \text{K} - 273.15$).
 
-Each sample is represented as a 75-day temporal window:
+### 2. Feature Aggregations
+To predict ignition risk without data leakage from future days, features were constructed using only observations up to the reference day (**Today**):
+* **Historical Windows**: Aggregations over **7, 14, 30, and 60 days** using average, median, minimum, and maximum statistics.
+* **Reference Day Features**: Same-day environmental conditions retained to capture immediate fire-conducive weather.
 
-- 60 days before the reference day
-- The reference day
-- 14 days after the reference day
+### 3. Collinearity Filtering & Initial Feature Set
+An initial temporal redundancy analysis revealed near-perfect collinearity ($r \approx 0.99$) between `Actual_Evapotranspiration` and `Potential_Evapotranspiration` across all time horizons. `Actual_Evapotranspiration` was explicitly removed to eliminate severe feature redundancy, establishing an initial dataset of **40 predictive features**.
 
-This results in more than 9.5 million sequence rows in the original dataset.
+---
 
-The original dataset contains real wildfire ignition events and synthesized negative samples generated using far, near, and yearly offsets.
+## Spatial Grouped Train/Test Split
+Wildfire observations are geographically correlated; standard random splitting causes severe spatial data leakage between nearby training and test coordinates.
 
-### Environmental Variables
+* **Grouping Variable**: Unique spatial locations constructed from `Latitude` and `Longitude` coordinates (coordinates were used strictly for grouping and excluded as model features).
+* **Splitting Method**: `StratifiedGroupKFold` (5 folds, 80/20 train/test split).
+* **Final Split**:
+  * **Training Set**: 47,645 samples
+  * **Test Set**: 11,911 samples
+  * **Spatial Overlap**: Exactly **0 overlapping locations** between training and test sets.
 
-The dataset contains environmental variables including:
+---
 
-- Precipitation
-- Relative humidity
-- Specific humidity
-- Solar radiation
-- Temperature
-- Wind speed
-- Vapor pressure deficit (VPD)
-- Fuel moisture
-- Energy Release Component (ERC)
-- Burning Index (BI)
-- Evapotranspiration
+## Models & Methodology
 
-For this project, the predictive features are constructed using information available up to the reference day, avoiding the use of future observations as predictors.
+### 1. Random Forest Baseline
+A `RandomForestClassifier` was trained on all 40 features to establish a performance baseline:
+* **Hyperparameters**: 300 estimators, `max_depth=10`, `min_samples_split=10`, `min_samples_leaf=4`, `max_features="sqrt"`, `class_weight="balanced"`.
+* **Baseline Performance**: 66.86% Test Accuracy, 0.77 Wildfire Recall, 0.71 Wildfire F1.
 
-## Methodology
+### 2. Feature Selection (Permutation Importance)
+To simplify the model while preserving predictive performance:
+1. **Permutation Importance** was computed on the baseline Random Forest model to rank feature contributions.
+2. **Feature Family Strategy**: Features were grouped into 10 environmental families (Precipitation, Specific Humidity, Min/Max Relative Humidity, Solar Radiation, Min/Max Temperature, Wind Speed, VPD, Potential Evapotranspiration). The single most informative historical window was selected for each family.
+3. **Current-Day Context**: The 4 most impactful reference-day features (`Solar_Radiation_Today`, `Min_Relative_Humidity_Today`, `Vapor_Pressure_Deficit_Today`, `Wind_Speed_Today`) were added.
+4. **Final Reduced Set**: **14 features** (a 65% reduction from the original 40 features).
 
-### Exploratory Data Analysis
+#### Selected 14 Features:
+1. `Precipitation_Average_30_Days`
+2. `Specific_Humidity_Average_30_Days`
+3. `Min_Relative_Humidity_Min_30_Days`
+4. `Max_Relative_Humidity_Max_7_Days`
+5. `Solar_Radiation_Average_7_Days`
+6. `Min_Daily_Temperature_Min_14_Days`
+7. `Max_Daily_Temperature_Max_30_Days`
+8. `Wind_Speed_Average_30_Days`
+9. `Vapor_Pressure_Deficit_Average_30_Days`
+10. `Potential_Evapotranspiration_Average_30_Days`
+11. `Solar_Radiation_Today`
+12. `Min_Relative_Humidity_Today`
+13. `Vapor_Pressure_Deficit_Today`
+14. `Wind_Speed_Today`
 
-The EDA examined:
+#### Methodological Validation: Out-of-Fold (OOF) Check
+* **Context**: Permutation Importance was initially evaluated on the test set. To address this methodological limitation and avoid indirect use of the test set during feature selection, an Out-of-Fold (OOF) permutation importance check was performed strictly within the training set.
+* **Findings**:
+  * **Virtually Identical Performance**: Retraining the model with the OOF-selected features yielded virtually unchanged results:
+    * **Test Accuracy**: Changed marginally from 69.40% to **69.31%**.
+    * **Wildfire Recall**: Remained constant at **79%**.
+    * **Train-Test Gap**: Remained virtually identical (**13.42 pp** vs. **13.47 pp**).
+  * **Minor Feature Window Shifts**: The OOF procedure modified only two temporal windows out of the 14 selected features:
+    * `Solar Radiation`: 7-day median $\rightarrow$ 30-day median
+    * `Minimum Daily Temperature`: 14-day minimum $\rightarrow$ 30-day minimum
+* **Conclusion**: This additional check indicates that the original test-set-based permutation importance had a negligible impact on final model performance. The original 14-feature model and results are therefore retained as the main project benchmark, while the OOF analysis is documented as a methodological validation.
 
-- Dataset structure
-- Missing values
-- Variable distributions
-- Class balance
-- Temporal characteristics
-- Geographic distribution
-- Environmental differences between wildfire and non-wildfire observations
+---
 
-### Feature Engineering
+### 3. Multi-Stage XGBoost Optimization
+XGBoost models were developed and systematically optimized through a three-stage tuning workflow using spatial cross-validation on the training set:
 
-Daily environmental variables were transformed into aggregated features over historical windows including:
+1. **Randomized Search CV**: Broad initial exploration across hyperparameter distributions.
+2. **Grid Search CV**: Focused search around promising hyperparameter regions.
+3. **Manual Fine-Tuning**: Systematic step-by-step experimentation isolating key hyperparameter interactions:
+   * **Tree Complexity**: Tuning `max_depth` and `min_child_weight`.
+   * **Regularization**: Evaluating L1 (`reg_alpha`) and L2 (`reg_lambda`) penalties.
+   * **Learning Rate & Estimators**: Balancing `learning_rate` and `n_estimators`.
+   * **Subsampling**: Testing row (`subsample`) and column (`colsample_bytree`) ratios.
+   * **Depth Re-evaluation**: Re-evaluating tree depth to control a ~27% train-CV overfitting gap, selecting `max_depth=8` / `n_estimators=500` for a balanced generalizability trade-off.
 
-- 7 days
-- 14 days
-- 30 days
-- 60 days
+#### Final Model Comparison (Untouched Test Set):
+| Metric | Baseline RF (40 Features) | Tuned XGBoost (40 Features Benchmark) | Final Tuned XGBoost (14 Features) |
+| :--- | :---: | :---: | :---: |
+| **Test Accuracy** | 66.86% | **71.31%** | 69.40% |
+| **Wildfire Precision** | 0.67 | **0.70** | 0.69 |
+| **Wildfire Recall** | 0.77 | **0.81** | 0.79 |
+| **Wildfire F1-Score** | 0.71 | **0.75** | 0.74 |
+| **Macro F1-Score** | 0.66 | **0.71** | 0.69 |
+| **Train-Test Gap** | ~5.8% | 13.55% | **13.47%** |
 
-Aggregation statistics included:
+*Note: The 14-feature XGBoost model was selected as the final operational model due to its simplicity (65% fewer inputs) with minimal loss in wildfire detection performance.*
 
-- Average
-- Median
-- Minimum
-- Maximum
-
-Features representing conditions on the reference day (`Today`) were also retained.
-
-### Spatial Train/Test Split
-
-Because wildfire observations can be geographically correlated, a spatially grouped train/test split was used.
-
-Locations were grouped using latitude and longitude, and `StratifiedGroupKFold` was used to create the split.
-
-Latitude and longitude were used only for grouping and were not used as model features.
-
-The final split produced:
-
-- Training set: 47,645 samples
-- Test set: 11,911 samples
-- 40 initial predictive features
-- No spatial overlap between training and test locations
-
-## Models
-
-### Random Forest
-
-A Random Forest classifier was used as the initial baseline model.
-
-The model used:
-
-- 300 trees
-- Maximum depth: 10
-- Minimum samples per split: 10
-- Minimum samples per leaf: 4
-- Square-root feature selection
-- Balanced class weights
-
-Random Forest was also used as the reference model for the **Permutation Importance** analysis used during feature selection.
-
-### XGBoost
-
-XGBoost was subsequently used to develop the final models.
-
-The final reduced model used:
-
-- 500 estimators
-- Learning rate: 0.05
-- Maximum depth: 8
-- Minimum child weight: 2
-- Subsample: 0.8
-- Column subsampling: 0.9
-- L1 regularisation (`reg_alpha`): 2
-- L2 regularisation (`reg_lambda`): 15
-
-## Model Performance
-
-### Random Forest — 40 Features
-
-| Metric | Score |
-|---|---:|
-| Accuracy | 66.86% |
-| Wildfire Precision | 0.67 |
-| Wildfire Recall | 0.77 |
-| Wildfire F1 | 0.71 |
-| Macro F1 | 0.66 |
-
-### XGBoost — 40 Features
-
-| Metric | Score |
-|---|---:|
-| Accuracy | 71.31% |
-| Wildfire Precision | 0.70 |
-| Wildfire Recall | 0.81 |
-| Wildfire F1 | 0.75 |
-| Macro F1 | 0.71 |
-
-### XGBoost — 14 Features
-
-After feature selection, the model was retrained using 14 selected features.
-
-| Metric | Score |
-|---|---:|
-| Accuracy | 69.40% |
-| Wildfire Precision | 0.69 |
-| Wildfire Recall | 0.79 |
-| Wildfire F1 | 0.74 |
-| Macro F1 | 0.69 |
-
-The 40-feature model is retained as a benchmark, while the 14-feature model is used for the final prediction workflow.
-
-## Feature Selection
-
-Feature selection was performed using **Permutation Importance** with a Random Forest model.
-
-Permutation Importance measures the importance of each feature by randomly shuffling its values and measuring how much the model's performance decreases. If shuffling a feature causes a large performance drop, the feature is considered more important to the model's predictions.
-
-The 40 initial features were ranked according to their permutation importance. Since several features were derived from the same underlying environmental variable using different time windows and aggregation methods, the selection process also considered **feature families**.
-
-### Selection Strategy
-
-The selection was performed in two stages:
-
-1. **One representative feature from each environmental family**
-
-   The Permutation Importance ranking was used to identify the most informative representation within each feature family. This prevented families containing many derived variables from dominating the final feature set and ensured that different types of environmental information were represented.
-
-2. **Four additional `Today` features**
-
-   Four features representing the environmental conditions on the reference day were then added. These features complement the historical aggregated variables by providing information about the conditions on the prediction day itself.
-
-This resulted in a final set of **14 features**, combining historical environmental patterns with current-day conditions.
-
-The reduced feature set was then used to retrain the XGBoost model and evaluate the impact of feature selection on predictive performance.
-
-The final 14 selected features were:
-
-1. Precipitation — 30-day average
-2. Specific Humidity — 30-day median
-3. Minimum Relative Humidity — 30-day minimum
-4. Maximum Relative Humidity — 7-day maximum
-5. Solar Radiation — 7-day median
-6. Minimum Daily Temperature — 14-day minimum
-7. Maximum Daily Temperature — 30-day maximum
-8. Wind Speed — 30-day median
-9. Vapor Pressure Deficit — 30-day median
-10. Potential Evapotranspiration — 30-day median
-11. Solar Radiation — Today
-12. Minimum Relative Humidity — Today
-13. Vapor Pressure Deficit — Today
-14. Wind Speed — Today
-
-The resulting feature set provides a more compact representation of wildfire-related environmental conditions while maintaining coverage across the main environmental families and preserving information about conditions on the prediction day.
+---
 
 ## Classification Threshold Analysis
+Out-of-fold predicted probabilities on the training set were analyzed across decision thresholds from 0.30 to 0.60. Two operational deployment modes were selected and evaluated on the untouched test set:
 
-The XGBoost model produces a probability between 0 and 1. Two classification thresholds were investigated:
+| Metric | Balanced Mode (Threshold = 0.50) | High-Sensitivity Mode (Threshold = 0.35) |
+| :--- | :---: | :---: |
+| **Test Accuracy** | **69.40%** | 66.80% |
+| **Wildfire Precision** | **0.69** | 0.63 |
+| **Wildfire Recall** | 78.82% | **92.21%** |
+| **Wildfire F1-Score** | 0.74 | **0.75** |
+| **No-Wildfire Recall** | **58.37%** | 37.07% |
+| **Missed Wildfires (FN)** | 1,360 | **500 (63% reduction)** |
 
-- **0.50** — balanced threshold
-- **0.35** — high-sensitivity threshold
+---
 
-The 0.35 threshold was selected using out-of-fold predictions from the training data. It was then evaluated on the untouched test set.
+## Model Explainability (SHAP Analysis)
+TreeSHAP (`TreeExplainer`) was used to quantify feature contributions for the final 14-feature XGBoost model on the test set.
 
-### Threshold = 0.50
+*Note on Feature Labeling: During feature engineering, several temporal features were named `Average` in code despite using median aggregation (except `Precipitation`, which correctly uses mean). Display labels were corrected for SHAP reporting.*
 
-| Metric | Score |
-|---|---:|
-| Accuracy | 69.40% |
-| Wildfire Precision | 0.688989 |
-| Wildfire Recall | 0.788228 |
-| Wildfire F1 | 0.735275 |
-| No-Wildfire Recall | 0.583713 |
+### Top Feature Importance (% Relative Mean Absolute SHAP):
+1. **`Precipitation_Average_30_Days`**: **17.25%** (strongest predictor; higher rainfall reduces risk)
+2. **`Potential_Evapotranspiration_Median_30_Days`**: **11.96%** (atmospheric water demand)
+3. **`Max_Daily_Temperature_Max_30_Days`**: **8.89%** (30-day peak heat)
+4. **`Min_Relative_Humidity_Today`**: **7.42%** (immediate air dryness)
+5. **`Min_Relative_Humidity_Min_30_Days`**: **6.98%** (extended background dryness)
+6. **`Solar_Radiation_Median_7_Days`**: **6.39%**
+7. **`Min_Daily_Temperature_Min_14_Days`**: **6.18%**
+8. **`Vapor_Pressure_Deficit_Today`**: **6.03%**
 
-Confusion matrix:
+---
 
-| | Predicted No Wildfire | Predicted Wildfire |
-|---|---:|---:|
-| Actual No Wildfire | 3,204 | 2,285 |
-| Actual Wildfire | 1,360 | 5,062 |
+## Model Deployment & Interactive Demo Suite
 
-### Threshold = 0.35
+### Serialized Artifacts
+* `xgb_reduced_final.pkl`: Serialized XGBoost 14-feature model.
+* `feature_metadata.json`: Feature ordering, display metadata, and operational threshold definitions (`0.50` and `0.35`).
 
-| Metric | Score |
-|---|---:|
-| Accuracy | 66.8038% |
-| Wildfire Precision | 0.631613 |
-| Wildfire Recall | 0.922143 |
-| Wildfire F1 | 0.749715 |
-| No-Wildfire Recall | 0.370741 |
+### Unified Demo Application (`wildfire_prediction_demo.py`)
+The pipeline provides a standalone demonstration module supporting two interaction modes:
 
-Confusion matrix:
+1. **Jupyter Notebook GUI (`ipywidgets`)**:
+   * Visual input cards for all 14 environmental variables with descriptions, units, and valid ranges.
+   * Preset scenario autofill buttons (**"Low Wildfire Risk Example"** vs. **"High Wildfire Risk Example"**).
+   * Mode toggle switch between **Balanced Mode (0.50)** and **High-Sensitivity Mode (0.35)**.
+   * Real-time wildfire probability gauges and formatted **Top 5 SHAP Contributor** tables showing exact directional impact ($\uparrow$ increases risk, $\downarrow$ decreases risk).
+2. **Interactive Terminal Application**:
+   * CLI interface prompting for environmental metrics with input validation.
+   * On-the-fly threshold switching and printed SHAP log-odds explanations.
 
-| | Predicted No Wildfire | Predicted Wildfire |
-|---|---:|---:|
-| Actual No Wildfire | 2,035 | 3,454 |
-| Actual Wildfire | 500 | 5,922 |
-
-The lower threshold increases wildfire recall while also increasing the number of false positives.
-
-## Model Explainability
-
-SHAP was used to investigate which features contributed most strongly to the XGBoost model predictions.
-
-The top features based on mean absolute SHAP values were:
-
-| Rank | Feature | Relative SHAP Importance |
-|---|---|---:|
-| 1 | Precipitation — 30-day average | 7.838% |
-| 2 | Potential Evapotranspiration — 30-day median | 4.424% |
-| 3 | Solar Radiation — 7-day median | 3.085% |
-| 4 | Maximum Daily Temperature — 30-day maximum | 2.838% |
-| 5 | Minimum Relative Humidity — 30-day minimum | 2.698% |
-| 6 | Minimum Daily Temperature — 14-day minimum | 2.187% |
-| 7 | Specific Humidity — 30-day median | 1.927% |
-| 8 | VPD — 30-day median | 1.787% |
-| 9 | Solar Radiation — Today | 1.540% |
-| 10 | Minimum Relative Humidity — Today | 1.476% |
-| 11 | VPD — Today | 1.476% |
-| 12 | Maximum Relative Humidity — 7-day maximum | 1.338% |
-| 13 | Wind Speed — 30-day median | 1.288% |
-| 14 | Wind Speed — Today | 0.746% |
-
-These values represent relative model importance based on mean absolute SHAP values. They should not be interpreted as causal effects or as direct percentage-point contributions to the predicted probability.
-
-## Final Model
-
-The final prediction workflow uses the 14-feature XGBoost model.
-
-The exported model artifacts are:
-
-- `xgb_reduced_final.pkl`
-- `feature_metadata.json`
-- `wildfire_prediction_demo.py`
-
-The metadata stores:
-
-- Required feature names
-- Balanced classification threshold (`0.50`)
-- High-sensitivity threshold (`0.35`)
-
-The prediction script loads the trained model and metadata and generates a wildfire probability from the required environmental inputs.
-
-## Repository Structure
-
-The current repository keeps the CSV files inside `notebooks/` because the existing notebooks use those paths.
-
-```text
-wildfire-prediction/
-│
-├── notebooks/
-│   ├── eda_ml_project.ipynb
-│   ├── ml_training.ipynb
-│   ├── wildfire_prediction_demo.ipynb
-│   ├── wildfire_prediction_demo.py
-│   ├── feature_metadata.json
-│   ├── xgb_reduced_final.pkl
-│   ├── header.jpg
-│   ├── Wildfire_Dataset.csv
-│   ├── Wildfire_Dataset_cleaned.csv
-│   └── Wildfire_Dataset_model_ready.csv
-│
-├── .gitignore
-└── README.md
-```
-
-The large CSV files are kept locally and excluded from GitHub using `.gitignore`.
-
-## Reproducibility
-
-The project was developed using Python and Jupyter Notebook.
-
-The notebooks contain the exploratory analysis, feature engineering, model training and evaluation process.
-
-The final trained model is provided as a serialized XGBoost model together with its feature metadata.
-
-Because the dataset files are large, they are not included in the Git repository. They must be available in the `notebooks/` directory when running the notebooks that reference them.
-
-The dataset can be downloaded from Kaggle:
-
-https://www.kaggle.com/datasets/firecastrl/us-wildfire-dataset
+---
 
 ## Limitations
+* **Geographic Scope**: Trained exclusively on continental US data; not validated for international ecosystems.
+* **Negative Sample Synthesis**: Non-wildfire cases rely on synthesized spatial/temporal offsets from the dataset authors.
+* **Unobserved Factors**: Local vegetation fuel load, ignition sources (human activity/lightning strikes), and real-time firefighting interventions are not captured in GRIDMET weather metrics.
+* **Methodological Limitation**: Permutation importance was initially evaluated on the test set, introducing indirect test-set influence during feature selection. A subsequent OOF validation within the training set produced virtually identical model performance (69.31% vs. 69.40% test accuracy), suggesting that this limitation had negligible impact on the reported results.
+* **Experimental Nature**: Designed as an experimental machine learning risk estimator rather than an operational early-warning emergency system.
 
-- The dataset covers the continental United States and the model has not been validated for other geographic regions.
-- The negative samples in the original dataset are synthesized using the methodology described by the dataset authors.
-- Wildfire ignition is influenced by factors that are not represented by the environmental variables used in this project.
-- The model identifies statistical patterns in the available data and does not establish causal relationships.
-- Model performance depends on the characteristics and distribution of the underlying dataset.
-- A lower classification threshold increases wildfire recall but also produces more false positives.
-- The model should be interpreted as an experimental wildfire-risk prediction model rather than an operational wildfire warning system.
+---
 
-## Technologies
+## Technologies Used
+* **Language & Environment**: Python 3.12, Jupyter Notebook
+* **Data Processing & Analytics**: `pandas`, `NumPy`, `GeoPandas`
+* **Machine Learning**: `scikit-learn`, `XGBoost`
+* **Explainability**: `SHAP`
+* **UI & Visualization**: `ipywidgets`, `Matplotlib`, `Seaborn`
 
-- Python
-- pandas
-- NumPy
-- scikit-learn
-- XGBoost
-- SHAP
-- Matplotlib
-- Jupyter Notebook
-- Git
-- GitHub
+---
 
-## References
-
-### Dataset
-
-FireCastRL. *US Wildfire Dataset (2014–2025).* Kaggle.
-
-https://www.kaggle.com/datasets/firecastrl/us-wildfire-dataset
-
-### Associated Research
-
-Mathur, S., Manjunath, S. B., Kulkarni, N., & Vereshchaka, A. (2025).
-
-*Spatiotemporal Wildfire Prediction and Reinforcement Learning for Helitack Suppression.*
-
-2025 International Conference on Machine Learning and Applications (ICMLA).
+## References & Credits
+* **Dataset**: FireCastRL, *US Wildfire Dataset (2014–2025)*, Kaggle.
+* **Associated Research**: Mathur, S., Manjunath, S. B., Kulkarni, N., & Vereshchaka, A. (2025). *Spatiotemporal Wildfire Prediction and Reinforcement Learning for Helitack Suppression.* ICMLA 2025.

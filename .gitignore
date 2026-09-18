@@ -23,3 +23,7 @@ notebooks/app.py
 notebooks/app_corrected_naming.py
 src/data_cleaning.py
 notebooks/us_states.geojson
+html/eda_ml_project.html
+html/ml_eda.html
+html/ml_training.html
+html/wildfire_prediction_demo.html
